@@ -1,0 +1,78 @@
+# invoke_x_ads_loader_prd.yaml
+# Cloud Scheduler から毎日起動される。Cloud Run ジョブを実行して完了まで待ち、失敗したら Slack に通知する
+# （書き方は ad-account-registry の invoke_ad_account_registry_prd.yaml に合わせている）。
+# 実行時の引数で環境変数を上書きできる（バックフィル・一部の系統の取り直し用）:
+#   {"date_from": "2026-10-01", "date_to": "2026-11-19"}
+#   {"account_ids": "18ce55wu9vz"}
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - projectId: "days-ad-data-pipeline"
+          - location: "us-central1"
+          - jobId: "x-ads-loader-prd"
+          - jobName: ${"projects/" + projectId + "/locations/" + location + "/jobs/" + jobId}
+          # 引数のキー → 上書きする環境変数
+          - overridable:
+              date_from: "DATE_FROM"
+              date_to: "DATE_TO"
+              account_ids: "ACCOUNT_IDS"
+          - envOverrides: []
+
+    - buildOverrides:
+        for:
+          value: key
+          in: ${keys(overridable)}
+          steps:
+            - addIfGiven:
+                switch:
+                  - condition: ${map.get(args, key) != null}
+                    # 式の中ではマップを書けないため、assign で作ってから足す
+                    assign:
+                      - envVar:
+                          name: ${overridable[key]}
+                          value: ${string(args[key])}
+                      - envOverrides: ${list.concat(envOverrides, envVar)}
+
+    - getSlackWebhook:
+        call: googleapis.secretmanager.v1.projects.secrets.versions.accessString
+        args:
+          secret_id: SLACK_WEBHOOK_URL
+          project_id: ${projectId}
+        result: slackWebhookUrl
+
+    - runJob:
+        try:
+          steps:
+            # コネクタはジョブの実行が終わるまで待つ。実行が失敗するとここで例外になる
+            # 通常の実行は 10 分以内の見込み（dev のバックフィルで約 7 分）。バックフィルに備えて待ち時間はジョブのタイムアウト（3 時間）に合わせる
+            - runCloudRunJob:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: ${jobName}
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env: ${envOverrides}
+                  connector_params:
+                    timeout: 10800
+                result: execution
+
+            - returnResult:
+                return: ${execution.name}
+
+        except:
+          as: e
+          steps:
+            - notifySlackError:
+                call: http.post
+                args:
+                  url: ${slackWebhookUrl}
+                  headers:
+                    Content-Type: "application/json"
+                  body:
+                    text: '${"❌ [days-ad-data-pipeline] X 広告の取得に失敗しました（" + jobId + "）。失敗したアカウント・テーブルは source_prd.x_ads_load_log を確認してください\n" + json.encode_to_string(e)}'
+
+            - raiseError:
+                raise: ${e}

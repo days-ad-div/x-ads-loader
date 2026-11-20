@@ -1,0 +1,10 @@
+# 認証情報や不要なファイルをビルドに含めない
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+.venv/
+__pycache__/
+*.pyc
+.gcloudignore

@@ -141,11 +141,11 @@ class Job:
         run = AccountRun(account_id, tz, split_period(start, end, settings.max_days_per_job))
         base_log = {"account_id": account_id, "started_at": started, "date_from": start.isoformat(), "date_to": end.isoformat()}
         try:
-            # 1. 期間内に配信があったエンティティ（設計書 3.2）
+            # 1. 期間内（と期間の前のアトリビューション期間）に配信があったエンティティ（設計書 3.2）
             for p in run.periods:
                 run.active[p] = {lv: self.active_entities(account_id, tz, p, entity) for lv, entity in LEVELS.items()}
             if not any(ids for by_level in run.active.values() for by_pl in by_level.values() for ids in by_pl.values()):
-                self.log(**base_log, target_table=None, status="skipped", error_message="期間内に配信なし")
+                self.log(**base_log, target_table=None, status="skipped", error_message="期間内（と前のアトリビューション期間）に配信なし")
                 return
             # 2. マスタ
             masters = Masters(self.client, account_id)
@@ -195,12 +195,15 @@ class Job:
             self.stage(table, "snapshot_date", rows, log)
 
     def active_entities(self, account_id: str, tz: ZoneInfo, p: Tuple[date, date], entity: str) -> Dict[str, Set[str]]:
-        """配信面 → 期間内に配信があったエンティティ ID"""
-        body = self.client.get(f"stats/accounts/{account_id}/active_entities", {"entity": entity, **time_window(tz, *p)})
+        """配信面 → 期間の開始日の attribution_lookback_days 日前〜期間の終わりに配信があったエンティティ ID。
+        配信を止めた後の CV だけの行も取るため、期間より前の配信も見る（active_entities も 45 日ずつで呼ぶ）"""
         by_placement: Dict[str, Set[str]] = defaultdict(set)
-        for row in body.get("data") or []:
-            for placement in row.get("placements") or PLACEMENTS_DEFAULT:
-                by_placement[placement].add(str(row["entity_id"]))
+        start = p[0] - timedelta(days=settings.attribution_lookback_days)
+        for q in split_period(start, p[1], settings.max_days_per_job):
+            body = self.client.get(f"stats/accounts/{account_id}/active_entities", {"entity": entity, **time_window(tz, *q)})
+            for row in body.get("data") or []:
+                for placement in row.get("placements") or PLACEMENTS_DEFAULT:
+                    by_placement[placement].add(str(row["entity_id"]))
         return dict(by_placement)
 
     def build_specs(self, run: AccountRun, with_tags: bool) -> List[JobSpec]:

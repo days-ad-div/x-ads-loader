@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     date_to: Optional[str] = None
     # 1 回の非同期レポートの最大日数。タグ別（セグメント）は 45 日までなので、通常のレポートも同じ区切りで取る
     max_days_per_job: int = 45
+    # 配信の有無（active_entities）は、取得期間の開始日のこの日数前から見る。CV は「CV が起きた日」に付き、
+    # 配信を止めた後もアトリビューション期間（最長 30 日）のあいだ付くため。期間内に配信がないエンティティを
+    # 取らないと、その CV だけの行がアカウント × 期間の置き換えで消える
+    attribution_lookback_days: int = 30
 
     # アカウントごとに同時に処理中にする非同期ジョブの数（X の上限は 100）
     max_concurrent_jobs: int = 80
